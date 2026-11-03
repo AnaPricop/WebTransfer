@@ -7,7 +7,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "dev:worker": "npx wrangler dev",
+    "deploy": "npx wrangler deploy"
   },
   "engines": {
     "node": ">=20"

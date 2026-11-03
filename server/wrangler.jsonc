@@ -1,0 +1,16 @@
+{
+  // Serverul de signaling (Worker + Durable Object). Frontend-ul are propriul wrangler.jsonc in radacina.
+  "name": "webbeam-signal",
+  "main": "worker.js",
+  "compatibility_date": "2026-11-01",
+  "durable_objects": {
+    "bindings": [{ "name": "ROOMS", "class_name": "Room" }]
+  },
+  // planul gratuit accepta doar Durable Objects cu stocare SQLite
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
+  "vars": {
+    // origini permise, separate prin virgula, ex. "https://webtransfer.contul-tau.workers.dev"
+    // gol = orice origine (doar pentru dezvoltare)
+    "ALLOWED_ORIGINS": ""
+  }
+}

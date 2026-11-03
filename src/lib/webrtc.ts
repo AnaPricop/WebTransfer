@@ -845,7 +845,10 @@ export class WebBeamPeer extends Emitter<PeerEvents> {
   /* ------------------------- signaling ------------------------- */
 
   private connectSignaling(): void {
-    const ws = new WebSocket(this.opts.signalingUrl);
+    // ID-ul camerei merge si in URL: Worker-ul Cloudflare il foloseste ca sa gaseasca Durable Object-ul camerei
+    const url = new URL(this.opts.signalingUrl, location.href);
+    url.searchParams.set('room', this.opts.roomId);
+    const ws = new WebSocket(url);
     this.ws = ws;
     ws.onopen = () => {
       ws.send(JSON.stringify({ t: 'join', room: this.opts.roomId, auth: this.keys.roomAuth, role: this.opts.role }));
