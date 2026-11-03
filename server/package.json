@@ -1,0 +1,18 @@
+{
+  "name": "webbeam-signaling",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Server minimalist de semnalizare WebRTC pentru WebBeam (mesaje opace, 0 stocare)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
