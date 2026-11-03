@@ -123,8 +123,14 @@ export function createSink(info: SinkInfo, opts: SinkOptions = {}): Promise<File
 /* 1. File System Access                                               */
 /* ------------------------------------------------------------------ */
 
+const FS_BATCH = 1024 * 1024;
+
 class FsAccessSink implements FileSink {
   readonly kind = 'fs-access' as const;
+  // Scrierile de 64 KiB una cate una sunt scumpe; le grupam in blocuri de ~1 MiB.
+  // Memoria ramane marginita (< 1 MiB + un chunk), iar flush-ul asteptat da backpressure.
+  private parts: Bytes[] = [];
+  private bytes = 0;
   private constructor(private readonly writable: FsWritable) {}
 
   /** Primeste promisiunea picker-ului (deja apelat sincron de createSink). */
@@ -139,16 +145,34 @@ class FsAccessSink implements FileSink {
     return new FsAccessSink(await handle.createWritable({ keepExistingData: false }));
   }
 
-  write(chunk: Bytes): Promise<void> {
-    return this.writable.write(chunk);
+  async write(chunk: Bytes): Promise<void> {
+    this.parts.push(chunk);
+    this.bytes += chunk.length;
+    if (this.bytes >= FS_BATCH) await this.flush();
+  }
+
+  private async flush(): Promise<void> {
+    if (!this.parts.length) return;
+    const out = new Uint8Array(this.bytes);
+    let offset = 0;
+    for (const p of this.parts) {
+      out.set(p, offset);
+      offset += p.length;
+    }
+    this.parts = [];
+    this.bytes = 0;
+    await this.writable.write(out);
   }
 
   async close(): Promise<SinkResult> {
+    await this.flush();
     await this.writable.close(); // abia acum fisierul apare pe disc (Chromium scrie intr-un fisier swap)
     return { saved: true, location: 'disk', dispose: async () => {} };
   }
 
   async abort(): Promise<void> {
+    this.parts = [];
+    this.bytes = 0;
     try {
       await this.writable.abort();
     } catch {

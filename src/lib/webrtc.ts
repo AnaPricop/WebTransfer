@@ -807,6 +807,7 @@ export class WebBeamPeer extends Emitter<PeerEvents> {
   async start(): Promise<void> {
     this.setState('connecting-signaling');
     this.keys = await deriveSessionKeys(this.opts.rootKey, this.opts.role);
+    if (this.closedByUser) return; // close() apelat cat timp se derivau cheile (ex. unmount in React)
     this.connectSignaling();
   }
 
