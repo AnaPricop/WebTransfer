@@ -1,19 +1,67 @@
 @import "tailwindcss";
 
+/*
+ * Culori: cerneala albastru-inchis + un singur galben ("raza") pentru actiunea principala si codul.
+ * Tema urmeaza setarea sistemului (deschis / inchis).
+ */
 :root {
-  color-scheme: dark;
+  color-scheme: light dark;
+  --bg: #eef1f4;
+  --surface: #ffffff;
+  --ink: #0f1b2d;
+  --muted: #5a6779;
+  --line: #d3dae2;
+  --beam: #ffd21f;
+  --beam-ink: #0f1b2d;
+  --ok: #157a4a;
+  --bad: #c62f2f;
+  --focus: #2b5fd9;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1621;
+    --surface: #152130;
+    --ink: #e9eef4;
+    --muted: #93a1b3;
+    --line: #263648;
+    --beam: #ffd21f;
+    --beam-ink: #0e1621;
+    --ok: #4cc38a;
+    --bad: #ff7a7a;
+    --focus: #7fa6ff;
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-beam: var(--beam);
+  --color-ok: var(--ok);
+  --color-bad: var(--bad);
 }
 
 html,
 body {
-  background: #0a0a0a;
-  color: #e5e5e5;
+  background: var(--bg);
+  color: var(--ink);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
   -webkit-text-size-adjust: 100%;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 button {
   cursor: pointer;
+  font: inherit;
 }
 button:disabled {
   cursor: default;
@@ -22,4 +70,106 @@ button:disabled {
 
 .num {
   font-variant-numeric: tabular-nums;
+}
+
+/* ---------- butoane si campuri ---------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: var(--beam);
+  color: var(--beam-ink);
+  padding: 0.65rem 1.1rem;
+  font-weight: 650;
+  line-height: 1.2;
+}
+.btn:hover:not(:disabled) {
+  filter: brightness(0.96);
+}
+.btn:disabled {
+  background: var(--line);
+  color: var(--muted);
+  opacity: 1;
+}
+
+.btn-quiet {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0.4rem 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.2;
+}
+.btn-quiet:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+
+.field {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0.65rem 0.8rem;
+}
+.field::placeholder {
+  color: var(--muted);
+  opacity: 0.8;
+}
+.field:focus {
+  border-color: var(--ink);
+  outline: none;
+}
+
+/* codul de conectare: un marker galben, singurul loc unde galbenul nu e pe un buton */
+.code {
+  display: inline-block;
+  border-radius: 6px;
+  background: var(--beam);
+  color: var(--beam-ink);
+  padding: 0.15em 0.4em;
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+/* ---------- linia dintre dispozitive ---------- */
+
+.beam line {
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.beam[data-tone="idle"] line {
+  stroke-dasharray: 0.1 9;
+}
+.beam[data-tone="waiting"] line {
+  stroke-dasharray: 0.1 9;
+  animation: beam-flow 2.4s linear infinite;
+}
+.beam[data-tone="seeking"] line {
+  stroke-dasharray: 8 8;
+  animation: beam-flow 0.8s linear infinite;
+}
+.beam[data-tone="broken"] line {
+  stroke-dasharray: 14 12;
+  opacity: 0.6;
+}
+@keyframes beam-flow {
+  to {
+    stroke-dashoffset: -18;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .beam line {
+    animation: none !important;
+  }
 }

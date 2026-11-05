@@ -48,7 +48,7 @@ const READ_BLOCK = 1024 * 1024;
 const BATCH_BYTES = 128 * 1024;
 const MAX_PENDING_OFFERS = 32;
 const MAX_ICE_RESTARTS = 3;
-const RELAY_AFTER_MS = 10_000; // daca P2P nu e stabilit in acest timp, hostul trece pe relay
+const RELAY_AFTER_MS = 4_000; // daca P2P nu e stabilit in acest timp, hostul trece pe relay
 const RELAY_INBOX_MAX = 256; // cadre de relay primite inainte ca partea locala sa treaca pe relay
 
 const T_CTRL = 1;
@@ -854,7 +854,7 @@ type SigMsg =
 
 const FATAL_SIGNALING: Record<string, string> = {
   'bad-auth': 'Cheia din link nu corespunde camerei.',
-  'room-not-found': 'Camera nu exista sau a expirat. Cere un cod QR nou.',
+  'room-not-found': 'Camera nu exista sau a expirat. Verifica codul sau cere unul nou.',
   'room-expired': 'Camera a expirat.',
   'bad-join': 'Cerere de conectare invalida.',
   'server-busy': 'Serverul de signaling e aglomerat. Incearca din nou.',

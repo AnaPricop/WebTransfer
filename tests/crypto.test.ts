@@ -5,7 +5,12 @@ import {
   FrameDecipher,
   b64urlDecode,
   b64urlEncode,
+  CODE_LENGTH,
   buildRoomUrl,
+  deriveFromCode,
+  formatCode,
+  generateCode,
+  normalizeCode,
   deriveSessionKeys,
   generateRoomId,
   generateRootKey,
@@ -87,4 +92,28 @@ test('signaling criptat: cheie gresita sau mesaj modificat esueaza', async () =>
   await assert.rejects(openSignal(b.signal, sealed), /signal authentication failed/);
   const tampered = sealed.slice(0, -2) + (sealed.endsWith('AA') ? 'BB' : 'AA');
   await assert.rejects(openSignal(a.signal, tampered), /signal/);
+});
+
+test('cod de conectare: format, normalizare, derivare deterministica', async () => {
+  const code = generateCode();
+  assert.match(code, /^[0-9A-HJKMNP-TV-Z]{10}$/);
+  assert.equal(code.length, CODE_LENGTH);
+  assert.notEqual(generateCode(), generateCode());
+
+  assert.equal(normalizeCode(' abcde-fghjk '), 'ABCDEFGHJK');
+  assert.equal(normalizeCode('o1Il0'), '01110'); // confuzii uzuale
+  assert.equal(formatCode('abcdefghjk'), 'ABCDE-FGHJK');
+  assert.equal(formatCode('abc'), 'ABC');
+  assert.equal(normalizeCode('0123456789ABCDEFG').length, CODE_LENGTH);
+
+  const a = await deriveFromCode('abcde-fghjk');
+  const b = await deriveFromCode('ABCDEFGHJK');
+  const c = await deriveFromCode('ABCDEFGHJM');
+  assert.deepEqual(a, b); // acelasi cod, scris diferit => aceeasi camera si aceeasi cheie
+  assert.notEqual(a.roomId, c.roomId);
+  assert.notDeepEqual(a.rootKey, c.rootKey);
+  assert.match(a.roomId, /^[A-Za-z0-9_-]{12}$/);
+  assert.equal(a.rootKey.length, 32);
+  assert.notEqual(b64urlEncode(a.rootKey).slice(0, 12), a.roomId); // ID-ul camerei nu da cheia
+  await assert.rejects(deriveFromCode('scurt'), /cod invalid/);
 });

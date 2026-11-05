@@ -11,7 +11,7 @@ interface Props {
   onCancel: (id: number) => void;
 }
 
-const btn = 'rounded border border-neutral-700 px-2.5 py-1 text-xs text-neutral-200 hover:border-neutral-500';
+const btn = 'btn-quiet';
 
 export function TransferRow({ p, offer, received, directory, onCancel }: Props) {
   const pct = Math.round(p.fraction * 100);
@@ -50,7 +50,7 @@ export function TransferRow({ p, offer, received, directory, onCancel }: Props) 
     );
   } else if (p.state === 'done') {
     if (p.direction === 'send') status = t.sent;
-    else if (received?.result.saved) status = t.savedDisk;
+    else if (received?.result.saved) status = received.result.name ? `${t.savedDisk}: ${received.result.name}` : t.savedDisk;
     else if (received?.result.save) {
       status = null;
       actions = (
@@ -64,20 +64,20 @@ export function TransferRow({ p, offer, received, directory, onCancel }: Props) 
   else if (p.state === 'error') status = `${t.failed}${p.error ? `: ${p.error}` : ''}`;
 
   return (
-    <li className="border-b border-neutral-900 py-3 last:border-b-0">
+    <li className="border-b border-line py-3 last:border-b-0">
       <div className="flex items-baseline justify-between gap-3">
-        <span className="min-w-0 truncate text-sm" title={p.name}>
+        <span className="min-w-0 truncate" title={p.name}>
           {p.direction === 'send' ? '↑' : '↓'} {p.name}
         </span>
-        <span className="num shrink-0 text-xs text-neutral-500">{formatBytes(p.size)}</span>
+        <span className="num shrink-0 text-sm text-muted">{formatBytes(p.size)}</span>
       </div>
       {active && (
-        <div className="mt-2 h-px bg-neutral-800">
-          <div className="h-px bg-neutral-200" style={{ width: `${pct}%` }} />
+        <div className="mt-2 h-1 overflow-hidden rounded-full bg-line">
+          <div className="h-1 rounded-full bg-ink" style={{ width: `${pct}%` }} />
         </div>
       )}
       <div className="mt-2 flex items-center justify-between gap-3">
-        <span className="num text-xs text-neutral-500">{status}</span>
+        <span className="num text-sm text-muted">{status}</span>
         <span className="flex gap-2">{actions}</span>
       </div>
     </li>

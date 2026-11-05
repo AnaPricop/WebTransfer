@@ -16,8 +16,8 @@ export default defineConfig(({ mode }) => ({
         name: 'WebBeam',
         short_name: 'WebBeam',
         description: 'Transfer de fisiere si text intre dispozitive, criptat cap la cap.',
-        theme_color: '#0a0a0a',
-        background_color: '#0a0a0a',
+        theme_color: '#0e1621',
+        background_color: '#0e1621',
         display: 'standalone',
         start_url: '/',
         icons: [

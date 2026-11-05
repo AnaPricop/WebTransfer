@@ -1,17 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
-import { buildRoomUrl, consumeRootKey, type Role } from '../lib/crypto';
+import { buildRoomUrl, consumeRootKey, formatCode, type Role } from '../lib/crypto';
 import { pickDirectory, sinkCapabilities, type FsDirHandle } from '../lib/fileSink';
 import { statusLabel, t } from '../strings';
 import { transferKey, useWebBeam, type TextItem } from '../useWebBeam';
+import { LinkDiagram } from './LinkDiagram';
 import { TransferRow } from './TransferRow';
 
 const signalingUrl: string =
   import.meta.env.VITE_SIGNALING_URL || `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
 
-const primary =
-  'rounded bg-neutral-100 px-3 py-1.5 text-xs font-medium text-neutral-900 hover:bg-white disabled:hover:bg-neutral-100';
-const secondary = 'rounded border border-neutral-700 px-3 py-1.5 text-xs text-neutral-200 hover:border-neutral-500';
+function readCode(roomId: string): string | null {
+  try {
+    return sessionStorage.getItem(`webbeam:code:${roomId}`);
+  } catch {
+    return null;
+  }
+}
 
 export function Room({ roomId }: { roomId: string }) {
   const [init] = useState(() => {
@@ -20,6 +25,7 @@ export function Room({ roomId }: { roomId: string }) {
       secure,
       key: secure ? consumeRootKey(roomId) : null,
       role: (sessionStorage.getItem(`webbeam:role:${roomId}`) === 'host' ? 'host' : 'guest') as Role,
+      code: readCode(roomId),
     };
   });
   const [dir, setDir] = useState<FsDirHandle | null>(null);
@@ -45,10 +51,14 @@ export function Room({ roomId }: { roomId: string }) {
 
   if (!init.secure || !init.key) {
     return (
-      <main className="mx-auto max-w-xl px-5 py-16">
-        <h1 className="text-xl font-semibold">WebBeam</h1>
-        <p className="mt-4 text-sm text-red-400">{init.secure ? t.noKey : t.insecure}</p>
-        <a href="/" className="mt-6 inline-block text-sm text-neutral-400 underline">
+      <main className="mx-auto max-w-2xl px-5 pt-8 pb-16">
+        <a href="/" className="text-lg font-bold tracking-tight">
+          WebBeam
+        </a>
+        <p role="alert" className="mt-10 text-bad">
+          {init.secure ? t.noKey : t.insecure}
+        </p>
+        <a href="/" className="btn-quiet mt-6">
           {t.home}
         </a>
       </main>
@@ -57,66 +67,73 @@ export function Room({ roomId }: { roomId: string }) {
 
   const dot =
     wb.state === 'connected'
-      ? 'bg-emerald-500'
+      ? 'bg-ok'
       : wb.state === 'failed'
-        ? 'bg-red-500'
+        ? 'bg-bad'
         : wb.state === 'closed' || wb.state === 'idle'
-          ? 'bg-neutral-600'
-          : 'bg-amber-500';
+          ? 'bg-muted'
+          : 'bg-beam';
 
   const rows = Object.values(wb.transfers).reverse();
+  const waiting = !connected && wb.state !== 'closed' && wb.state !== 'failed';
 
   return (
-    <main className="mx-auto max-w-xl px-5 py-10">
-      <header className="flex items-center justify-between">
-        <a href="/" className="font-semibold">
+    <main className="mx-auto max-w-2xl px-5 pt-8 pb-12">
+      <header className="flex items-center justify-between gap-4">
+        <a href="/" className="text-lg font-bold tracking-tight">
           WebBeam
         </a>
-        <span className="flex items-center gap-2 text-sm text-neutral-400">
-          <span className={`h-2 w-2 rounded-full ${dot}`} />
+        <span className="flex items-center gap-2 text-sm" role="status">
+          <span className={`h-2.5 w-2.5 rounded-full ${dot}`} />
           {statusLabel(wb.state, wb.route)}
         </span>
       </header>
 
-      {wb.error && <p className="mt-4 text-sm text-red-400">{wb.error}</p>}
+      <div className="mt-10">
+        <LinkDiagram state={wb.state} route={wb.route} />
+      </div>
 
-      {!connected && init.role === 'host' && <Invite link={link} />}
-      {!connected && init.role === 'guest' && wb.state !== 'closed' && wb.state !== 'failed' && (
-        <p className="mt-10 text-sm text-neutral-400">{t.joining}</p>
+      {wb.error && (
+        <p role="alert" className="mt-6 text-sm text-bad">
+          {wb.error}
+        </p>
       )}
-      {wb.state === 'closed' && <p className="mt-6 text-sm text-neutral-500">{t.sessionClosed}</p>}
+      {wb.state === 'closed' && <p className="mt-6 text-sm text-muted">{t.sessionClosed}</p>}
+
+      {waiting && init.role === 'host' && <Invite link={link} code={init.code} />}
+      {waiting && init.role === 'guest' && <p className="mt-10 text-muted">{t.joining}</p>}
 
       {connected && (
-        <>
+        <div className="mt-10 grid gap-8 md:grid-cols-2">
           <DropZone onFiles={wb.sendFiles} />
           <TextBox onSend={wb.sendText} />
-        </>
+        </div>
       )}
 
       {wb.texts.length > 0 && <TextList items={wb.texts} />}
 
       {rows.length > 0 && (
-        <section className="mt-10">
-          <div className="flex items-baseline justify-between">
-            <h2 className="text-sm text-neutral-300">{t.transfers}</h2>
+        <section className="mt-12">
+          <div className="flex items-baseline justify-between gap-4 border-b border-line pb-2">
+            <h2 className="font-semibold">{t.transfers}</h2>
             {sinkCapabilities().directoryPicker &&
               (dir ? (
-                <span className="text-xs text-neutral-500">
+                <span className="text-sm text-muted">
                   {t.dirChosen}{' '}
-                  <button className="underline hover:text-neutral-300" onClick={() => setDir(null)}>
+                  <button className="underline hover:text-ink" onClick={() => setDir(null)}>
                     {t.dirDrop}
                   </button>
                 </span>
               ) : (
                 <button
-                  className="text-xs text-neutral-500 underline hover:text-neutral-300"
+                  className="text-sm text-muted underline hover:text-ink"
                   onClick={() => void pickDirectory().then(setDir)}
                 >
                   {t.pickDir}
                 </button>
               ))}
           </div>
-          <ul className="mt-2">
+          <ul>
             {rows.map((p) => {
               const k = transferKey(p);
               return (
@@ -134,9 +151,9 @@ export function Room({ roomId }: { roomId: string }) {
         </section>
       )}
 
-      <footer className="mt-16 flex items-center justify-between text-xs text-neutral-600">
+      <footer className="mt-16 flex items-center justify-between gap-4 border-t border-line pt-4 text-sm text-muted">
         <span>{t.e2ee}</span>
-        <button className="underline hover:text-neutral-400" onClick={() => location.assign('/')}>
+        <button className="underline hover:text-ink" onClick={() => location.assign('/')}>
           {t.leave}
         </button>
       </footer>
@@ -144,36 +161,57 @@ export function Room({ roomId }: { roomId: string }) {
   );
 }
 
-function Invite({ link }: { link: string }) {
-  const [qr, setQr] = useState('');
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    void QRCode.toDataURL(link, { margin: 1, width: 224, errorCorrectionLevel: 'M' }).then(setQr);
-  }, [link]);
-
-  const copy = async () => {
+function useCopy() {
+  const [copied, setCopied] = useState<string | null>(null);
+  const copy = async (what: string, text: string) => {
     try {
-      await navigator.clipboard.writeText(link);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      await navigator.clipboard.writeText(text);
+      setCopied(what);
+      setTimeout(() => setCopied(null), 1500);
     } catch {
-      /* clipboard indisponibil: linkul e afisat si se poate selecta */
+      /* clipboard indisponibil: textul e afisat si se poate selecta */
     }
   };
+  return { copied, copy };
+}
+
+function Invite({ link, code }: { link: string; code: string | null }) {
+  const [qr, setQr] = useState('');
+  const { copied, copy } = useCopy();
+
+  useEffect(() => {
+    void QRCode.toDataURL(link, { margin: 1, width: 360, errorCorrectionLevel: 'M' }).then(setQr);
+  }, [link]);
 
   return (
-    <section className="mt-10">
-      <h2 className="text-sm text-neutral-300">{t.scanTitle}</h2>
-      <div className="mt-4 inline-block rounded bg-white p-2">
-        {qr ? <img src={qr} width={224} height={224} alt="QR" /> : <div style={{ width: 224, height: 224 }} />}
+    <section className="mt-12 grid gap-8 border-t border-line pt-8 sm:grid-cols-[auto_1fr] sm:gap-10">
+      <div className="h-44 w-44 shrink-0 overflow-hidden rounded-lg border border-line bg-white p-1.5">
+        {qr && <img src={qr} width={168} height={168} alt="Cod QR pentru conectare" className="block h-full w-full" />}
       </div>
-      <p className="mt-6 text-xs text-neutral-500">{t.scanHint}</p>
-      <div className="mt-2 flex items-start gap-3">
-        <code className="min-w-0 flex-1 break-all text-xs text-neutral-400">{link}</code>
-        <button className={secondary} onClick={copy}>
-          {copied ? t.copied : t.copy}
-        </button>
+
+      <div className="min-w-0">
+        <h2 className="text-xl font-bold tracking-tight">{t.inviteTitle}</h2>
+        <p className="mt-1 text-muted">{t.inviteHint}</p>
+
+        {code && (
+          <div className="mt-5">
+            <span className="code text-3xl select-all">{formatCode(code)}</span>
+            <div className="mt-3">
+              <button className="btn-quiet" onClick={() => void copy('code', formatCode(code))}>
+                {copied === 'code' ? t.copied : t.copyCode}
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="mt-6 flex items-center gap-3">
+          <code className="min-w-0 flex-1 truncate text-xs text-muted" title="Link de conectare">
+            {link.replace(/#.*$/, '#…')}
+          </code>
+          <button className="btn-quiet shrink-0" onClick={() => void copy('link', link)}>
+            {copied === 'link' ? t.copied : t.copyLink}
+          </button>
+        </div>
       </div>
     </section>
   );
@@ -187,7 +225,7 @@ function DropZone({ onFiles }: { onFiles: (f: File[]) => void }) {
       role="button"
       tabIndex={0}
       onClick={() => input.current?.click()}
-      onKeyDown={(e) => e.key === 'Enter' && input.current?.click()}
+      onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && input.current?.click()}
       onDragOver={(e) => {
         e.preventDefault();
         setOver(true);
@@ -198,11 +236,12 @@ function DropZone({ onFiles }: { onFiles: (f: File[]) => void }) {
         setOver(false);
         onFiles([...e.dataTransfer.files]);
       }}
-      className={`mt-10 cursor-pointer rounded border border-dashed px-4 py-10 text-center text-sm ${
-        over ? 'border-neutral-400 text-neutral-200' : 'border-neutral-700 text-neutral-400'
+      className={`flex min-h-44 cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-4 py-10 text-center transition-colors ${
+        over ? 'border-ink bg-surface' : 'border-muted/50 hover:border-muted'
       }`}
     >
-      {t.dropTitle} <span className="text-neutral-500">{t.dropAlt}</span>
+      <span className="text-lg font-semibold">{t.dropTitle}</span>
+      <span className="mt-1 text-sm text-muted">{t.dropAlt}</span>
       <input
         ref={input}
         type="file"
@@ -236,26 +275,26 @@ function TextBox({ onSend }: { onSend: (text: string) => Promise<void> }) {
   };
 
   return (
-    <section className="mt-8">
-      <label htmlFor="txt" className="text-sm text-neutral-300">
+    <section>
+      <label htmlFor="txt" className="font-semibold">
         {t.textLabel}
       </label>
       <textarea
         id="txt"
-        rows={3}
+        rows={4}
         value={value}
         placeholder={t.textPlaceholder}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) void send();
         }}
-        className="mt-2 w-full resize-y rounded border border-neutral-800 bg-transparent px-3 py-2 text-sm outline-none placeholder:text-neutral-600 focus:border-neutral-500"
+        className="field mt-2 resize-y"
       />
       <div className="mt-2 flex gap-2">
-        <button className={primary} onClick={() => void send()} disabled={!value.trim()}>
+        <button className="btn" onClick={() => void send()} disabled={!value.trim()}>
           {t.send}
         </button>
-        <button className={secondary} onClick={() => void pasteSend()}>
+        <button className="btn-quiet" onClick={() => void pasteSend()}>
           {t.pasteSend}
         </button>
       </div>
@@ -264,19 +303,20 @@ function TextBox({ onSend }: { onSend: (text: string) => Promise<void> }) {
 }
 
 function TextList({ items }: { items: TextItem[] }) {
+  const { copied, copy } = useCopy();
   return (
-    <section className="mt-10">
-      <h2 className="text-sm text-neutral-300">{t.received}</h2>
-      <ul className="mt-2">
+    <section className="mt-12">
+      <h2 className="border-b border-line pb-2 font-semibold">{t.received}</h2>
+      <ul>
         {items.map((it) => (
-          <li key={it.id} className="border-b border-neutral-900 py-3 last:border-b-0">
-            <p className="whitespace-pre-wrap break-words text-sm">{it.text}</p>
-            <div className="mt-2 flex items-center justify-between">
-              <span className="num text-xs text-neutral-500">
+          <li key={it.id} className="border-b border-line py-3 last:border-b-0">
+            <p className="break-words whitespace-pre-wrap">{it.text}</p>
+            <div className="mt-2 flex items-center justify-between gap-3">
+              <span className="num text-sm text-muted">
                 {it.from === 'me' ? '↑' : '↓'} {new Date(it.at).toLocaleTimeString()}
               </span>
-              <button className={secondary} onClick={() => void navigator.clipboard?.writeText(it.text)}>
-                {t.copy}
+              <button className="btn-quiet" onClick={() => void copy(`t${it.id}`, it.text)}>
+                {copied === `t${it.id}` ? t.copied : t.copy}
               </button>
             </div>
           </li>

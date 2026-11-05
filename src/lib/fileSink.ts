@@ -31,6 +31,8 @@ export interface SinkResult {
   /** true = fisierul e deja pe disc. false = a fost pornita descarcarea; UI arata butonul "Salveaza". */
   saved: boolean;
   location: 'disk' | 'download';
+  /** Numele sub care s-a salvat (browserul nu ne da calea completa). */
+  name?: string;
   /** Re-declanseaza descarcarea (pe iOS trebuie apelat dintr-un click). */
   save?: () => void;
   /** Elibereaza URL-ul blob si datele din IndexedDB. Apeleaza-l dupa ce utilizatorul a salvat. */
@@ -53,14 +55,15 @@ interface FsWritable {
   abort(reason?: unknown): Promise<void>;
 }
 interface FsFileHandle {
+  readonly name?: string;
   createWritable(opts?: { keepExistingData?: boolean }): Promise<FsWritable>;
 }
 export interface FsDirHandle {
   getFileHandle(name: string, opts?: { create?: boolean }): Promise<FsFileHandle>;
 }
 interface FsGlobal {
-  showSaveFilePicker?: (o?: { suggestedName?: string }) => Promise<FsFileHandle>;
-  showDirectoryPicker?: (o?: { mode?: 'read' | 'readwrite' }) => Promise<FsDirHandle>;
+  showSaveFilePicker?: (o?: { suggestedName?: string; id?: string; startIn?: string }) => Promise<FsFileHandle>;
+  showDirectoryPicker?: (o?: { mode?: 'read' | 'readwrite'; id?: string; startIn?: string }) => Promise<FsDirHandle>;
 }
 const fsGlobal = () => globalThis as unknown as FsGlobal;
 
@@ -82,7 +85,7 @@ export async function pickDirectory(): Promise<FsDirHandle | null> {
   const g = fsGlobal();
   if (!g.showDirectoryPicker) return null;
   try {
-    return await g.showDirectoryPicker({ mode: 'readwrite' });
+    return await g.showDirectoryPicker({ mode: 'readwrite', id: 'webbeam-dir', startIn: 'downloads' });
   } catch (e) {
     if (isAbortError(e)) return null;
     throw e;
@@ -110,7 +113,7 @@ export function createSink(info: SinkInfo, opts: SinkOptions = {}): Promise<File
   if (!opts.forceFallback) {
     if (opts.directory) return FsAccessSink.inDirectory(opts.directory, name);
     if (typeof g.showSaveFilePicker === 'function') {
-      return FsAccessSink.fromPicker(g.showSaveFilePicker({ suggestedName: name }));
+      return FsAccessSink.fromPicker(g.showSaveFilePicker({ suggestedName: name, id: 'webbeam-save', startIn: 'downloads' }));
     }
   }
   if (typeof indexedDB !== 'undefined') {
@@ -131,18 +134,21 @@ class FsAccessSink implements FileSink {
   // Memoria ramane marginita (< 1 MiB + un chunk), iar flush-ul asteptat da backpressure.
   private parts: Bytes[] = [];
   private bytes = 0;
-  private constructor(private readonly writable: FsWritable) {}
+  private constructor(
+    private readonly writable: FsWritable,
+    private readonly savedName?: string,
+  ) {}
 
   /** Primeste promisiunea picker-ului (deja apelat sincron de createSink). */
   static async fromPicker(pending: Promise<FsFileHandle>): Promise<FsAccessSink> {
     const handle = await pending; // AbortError daca utilizatorul inchide dialogul
-    return new FsAccessSink(await handle.createWritable({ keepExistingData: false }));
+    return new FsAccessSink(await handle.createWritable({ keepExistingData: false }), handle.name);
   }
 
   static async inDirectory(dir: FsDirHandle, name: string): Promise<FsAccessSink> {
     const unique = await uniqueName(dir, name);
     const handle = await dir.getFileHandle(unique, { create: true });
-    return new FsAccessSink(await handle.createWritable({ keepExistingData: false }));
+    return new FsAccessSink(await handle.createWritable({ keepExistingData: false }), unique);
   }
 
   async write(chunk: Bytes): Promise<void> {
@@ -167,7 +173,7 @@ class FsAccessSink implements FileSink {
   async close(): Promise<SinkResult> {
     await this.flush();
     await this.writable.close(); // abia acum fisierul apare pe disc (Chromium scrie intr-un fisier swap)
-    return { saved: true, location: 'disk', dispose: async () => {} };
+    return { saved: true, location: 'disk', name: this.savedName, dispose: async () => {} };
   }
 
   async abort(): Promise<void> {

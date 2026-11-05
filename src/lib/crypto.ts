@@ -89,6 +89,58 @@ export function generateRoomId(length = 10): string {
 /* Link-ul camerei: cheia sta in hash                                  */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Cod de conectare (introdus de mana)                                 */
+/* ------------------------------------------------------------------ */
+/*
+ * Un cod scurt de 10 caractere (50 de biti, alfabet Crockford fara I L O U) din care ambele parti
+ * deriva la fel ID-ul camerei si rootKey, printr-un KDF scump (PBKDF2-SHA256, 600.000 iteratii).
+ * Serverul vede doar ID-ul camerei (tot rezultat al KDF-ului): ca sa afle codul ar trebui sa
+ * incerce ~2^50 coduri, fiecare cu un KDF intreg. Codul e aleatoriu, generat de aplicatie
+ * (nu ales de om), pentru ca un cod scurt ales de om ar fi usor de ghicit.
+ */
+
+const CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+export const CODE_LENGTH = 10;
+const CODE_ITERATIONS = 600_000;
+const CODE_SALT = te.encode('webbeam/v1/code');
+const CODE_ROOM_BYTES = 9; // -> ID de camera de 12 caractere base64url
+
+export function generateCode(): string {
+  let out = '';
+  for (const b of randomBytes(CODE_LENGTH)) out += CODE_ALPHABET[b & 31]; // 256 % 32 == 0: fara bias
+  return out;
+}
+
+/** Tolereaza litere mici, spatii, cratime si confuziile uzuale (O->0, I/L->1). */
+export function normalizeCode(raw: string): string {
+  let out = '';
+  for (const ch of raw.toUpperCase().replace(/O/g, '0').replace(/[IL]/g, '1')) {
+    if (CODE_ALPHABET.includes(ch)) out += ch;
+  }
+  return out.slice(0, CODE_LENGTH);
+}
+
+/** ABCDE-FGHJK, ca sa fie usor de citit si de scris. */
+export function formatCode(code: string): string {
+  const c = normalizeCode(code);
+  return c.length > 5 ? `${c.slice(0, 5)}-${c.slice(5)}` : c;
+}
+
+export async function deriveFromCode(code: string): Promise<{ roomId: string; rootKey: Bytes }> {
+  const norm = normalizeCode(code);
+  if (norm.length !== CODE_LENGTH) throw new CryptoError('cod invalid');
+  const base = await crypto.subtle.importKey('raw', te.encode(norm), 'PBKDF2', false, ['deriveBits']);
+  const bits = new Uint8Array(
+    await crypto.subtle.deriveBits(
+      { name: 'PBKDF2', hash: 'SHA-256', salt: CODE_SALT, iterations: CODE_ITERATIONS },
+      base,
+      8 * (CODE_ROOM_BYTES + ROOT_KEY_BYTES),
+    ),
+  );
+  return { roomId: b64urlEncode(bits.subarray(0, CODE_ROOM_BYTES)), rootKey: bits.slice(CODE_ROOM_BYTES) };
+}
+
 export function buildRoomUrl(origin: string, roomId: string, rootKey: Uint8Array): string {
   return `${origin.replace(/\/$/, '')}/room/${roomId}#key=${b64urlEncode(rootKey)}`;
 }
