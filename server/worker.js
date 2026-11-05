@@ -25,15 +25,17 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === '/healthz') return new Response('ok', { headers: { 'cache-control': 'no-store' } });
-    if (url.pathname !== '/ws') return new Response('Not found', { status: 404 });
-    if (request.headers.get('Upgrade') !== 'websocket') return new Response('Expected WebSocket', { status: 426 });
-
     const allowed = (env.ALLOWED_ORIGINS ?? '')
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
     const origin = request.headers.get('Origin');
-    if (allowed.length && (!origin || !allowed.includes(origin))) return new Response('Forbidden', { status: 403 });
+    const originOk = !allowed.length || (!!origin && allowed.includes(origin));
+
+    if (url.pathname === '/turn') return turnCredentials(request, env, origin, originOk);
+    if (url.pathname !== '/ws') return new Response('Not found', { status: 404 });
+    if (request.headers.get('Upgrade') !== 'websocket') return new Response('Expected WebSocket', { status: 426 });
+    if (!originOk) return new Response('Forbidden', { status: 403 });
 
     const room = url.searchParams.get('room') ?? '';
     if (!ROOM_RE.test(room)) return new Response('Bad room', { status: 400 });
@@ -41,6 +43,38 @@ export default {
     return env.ROOMS.get(env.ROOMS.idFromName(room)).fetch(request);
   },
 };
+
+/**
+ * Credentiale TURN temporare de la Cloudflare Realtime (TURN_KEY_ID + TURN_KEY_API_TOKEN, ca secrete).
+ * Fara secrete raspunde cu lista goala, iar clientul foloseste doar STUN. Doar pentru origini permise.
+ */
+async function turnCredentials(request, env, origin, originOk) {
+  const headers = { 'cache-control': 'no-store', 'content-type': 'application/json' };
+  if (origin && originOk) {
+    headers['access-control-allow-origin'] = origin;
+    headers['vary'] = 'Origin';
+  }
+  if (request.method !== 'GET') return new Response('Method not allowed', { status: 405 });
+  if (!originOk) return new Response('Forbidden', { status: 403 });
+  if (!env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN) return new Response('{"iceServers":[]}', { headers });
+  try {
+    const res = await fetch(
+      `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(env.TURN_KEY_ID)}/credentials/generate-ice-servers`,
+      {
+        method: 'POST',
+        headers: { authorization: `Bearer ${env.TURN_KEY_API_TOKEN}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ ttl: 6 * 3600 }),
+      },
+    );
+    if (!res.ok) return new Response('{"iceServers":[]}', { headers });
+    const data = await res.json();
+    // doar serverele TURN; STUN-ul public il adauga clientul
+    const turn = (Array.isArray(data.iceServers) ? data.iceServers : []).filter((s) => s.username && s.credential);
+    return new Response(JSON.stringify({ iceServers: turn }), { headers });
+  } catch {
+    return new Response('{"iceServers":[]}', { headers });
+  }
+}
 
 const isJoined = (ws) => !!ws.deserializeAttachment()?.role;
 const otherRole = (role) => (role === 'host' ? 'guest' : 'host');

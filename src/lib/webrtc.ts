@@ -62,6 +62,26 @@ export const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
 ];
 
+/**
+ * Cere de la Worker-ul de signaling serverele ICE (STUN + TURN cu credentiale temporare).
+ * Daca nu raspunde la timp sau TURN nu e configurat, ramane STUN-ul public (merge doar cand reteaua permite P2P direct).
+ */
+export async function fetchIceServers(signalingUrl: string, timeoutMs = 4000): Promise<RTCIceServer[]> {
+  try {
+    const u = new URL(signalingUrl, location.href);
+    u.protocol = u.protocol === 'wss:' ? 'https:' : 'http:';
+    u.pathname = u.pathname.replace(/\/ws$/, '/turn');
+    u.search = '';
+    const res = await fetch(u, { signal: AbortSignal.timeout(timeoutMs), cache: 'no-store' });
+    if (!res.ok) return DEFAULT_ICE_SERVERS;
+    const body = (await res.json()) as { iceServers?: RTCIceServer[] };
+    const extra = Array.isArray(body.iceServers) ? body.iceServers : [];
+    return extra.length ? [...extra, ...DEFAULT_ICE_SERVERS] : DEFAULT_ICE_SERVERS;
+  } catch {
+    return DEFAULT_ICE_SERVERS;
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Utilitare                                                           */
 /* ------------------------------------------------------------------ */
@@ -773,6 +793,7 @@ const FATAL_SIGNALING: Record<string, string> = {
 
 export class WebBeamPeer extends Emitter<PeerEvents> {
   private keys!: SessionKeys;
+  private iceServers: RTCIceServer[] = DEFAULT_ICE_SERVERS;
   private ws: WebSocket | null = null;
   private joined = false;
   private fatal = false;
@@ -808,6 +829,8 @@ export class WebBeamPeer extends Emitter<PeerEvents> {
     this.setState('connecting-signaling');
     this.keys = await deriveSessionKeys(this.opts.rootKey, this.opts.role);
     if (this.closedByUser) return; // close() apelat cat timp se derivau cheile (ex. unmount in React)
+    this.iceServers = this.opts.iceServers ?? (await fetchIceServers(this.opts.signalingUrl));
+    if (this.closedByUser) return;
     this.connectSignaling();
   }
 
@@ -862,7 +885,7 @@ export class WebBeamPeer extends Emitter<PeerEvents> {
       if (this.closedByUser || this.fatal || this._state === 'connected') return; // P2P stabil: signaling se redeschide la nevoie
       if (this.wsAttempts >= 6) {
         this.setState('failed');
-        // host + cod de inchidere: ajuta la diagnostic (nimic secret)
+        // host + cod de inchidere: ajuta la diagnostic (nu contine nimic secret)
         this.emit('error', new Error(`Nu ma pot conecta la serverul de signaling (${url.host}, cod ${ev.code}).`));
         return;
       }
@@ -1001,7 +1024,7 @@ export class WebBeamPeer extends Emitter<PeerEvents> {
   private resetPeerConnection(): void {
     this.teardownPeer();
     const pc = new RTCPeerConnection({
-      iceServers: this.opts.iceServers ?? DEFAULT_ICE_SERVERS,
+      iceServers: this.iceServers,
       bundlePolicy: 'max-bundle',
     });
     this.pc = pc;
