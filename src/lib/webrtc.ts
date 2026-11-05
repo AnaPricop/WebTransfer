@@ -855,14 +855,15 @@ export class WebBeamPeer extends Emitter<PeerEvents> {
     };
     ws.onmessage = (ev) => this.onSignalingMessage(ev.data);
     ws.onerror = () => {};
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       if (this.ws !== ws) return;
       this.ws = null;
       this.joined = false;
       if (this.closedByUser || this.fatal || this._state === 'connected') return; // P2P stabil: signaling se redeschide la nevoie
       if (this.wsAttempts >= 6) {
         this.setState('failed');
-        this.emit('error', new Error('Nu ma pot conecta la serverul de signaling.'));
+        // host + cod de inchidere: ajuta la diagnostic (nimic secret)
+        this.emit('error', new Error(`Nu ma pot conecta la serverul de signaling (${url.host}, cod ${ev.code}).`));
         return;
       }
       const delay = Math.min(8000, 500 * 2 ** this.wsAttempts++) + Math.random() * 300;
