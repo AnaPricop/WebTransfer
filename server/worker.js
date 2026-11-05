@@ -15,6 +15,7 @@ import { DurableObject } from 'cloudflare:workers';
 const ROOM_RE = /^[A-Za-z0-9_-]{8,32}$/;
 const AUTH_RE = /^[A-Za-z0-9_-]{43}$/;
 const MAX_MSG = 64 * 1024;
+const MAX_RELAY_FRAME = 80 * 1024; // cadru binar de relay: ciphertext E2EE de cel mult 64 KiB
 const MAX_SIG_LEN = 48 * 1024;
 const MAX_SOCKETS = 8;
 const JOIN_TIMEOUT_MS = 5_000;
@@ -105,7 +106,7 @@ export class Room extends DurableObject {
   /* ------------------------------ mesaje ------------------------------ */
 
   async webSocketMessage(ws, message) {
-    if (typeof message !== 'string') return this.kick(ws, 4003, 'bad-frame');
+    if (typeof message !== 'string') return this.relay(ws, message);
     if (message.length > MAX_MSG) return this.kick(ws, 4003, 'too-large');
 
     let msg;
@@ -129,6 +130,23 @@ export class Room extends DurableObject {
     }
     if (msg.t === 'ping') return this.send(ws, { t: 'pong' });
     this.kick(ws, 4003, 'unknown-type');
+  }
+
+  /**
+   * Relay de rezerva cand P2P e blocat: cadre binare deja criptate E2EE (AES-GCM, contor anti-replay),
+   * trimise partenerului imediat. Nu se citesc si nu se stocheaza nicaieri.
+   */
+  relay(ws, data) {
+    const att = ws.deserializeAttachment() ?? {};
+    if (!att.role) return this.kick(ws, 4003, 'bad-frame');
+    if (data.byteLength > MAX_RELAY_FRAME) return this.kick(ws, 4003, 'too-large');
+    const partner = this.joinedPeers(ws).find((w) => w.deserializeAttachment().role === otherRole(att.role));
+    if (!partner) return;
+    try {
+      partner.send(data);
+    } catch {
+      /* partener inchis intre timp */
+    }
   }
 
   async join(ws, att, msg) {

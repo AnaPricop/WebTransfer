@@ -31,7 +31,7 @@ const ROOM_MAX_AGE_MS = Number(env.ROOM_MAX_AGE_MS ?? 6 * 3600_000);
 const MAX_ROOMS = Number(env.MAX_ROOMS ?? 5000);
 const MAX_CONNS_PER_IP = Number(env.MAX_CONNS_PER_IP ?? 20);
 
-const MAX_PAYLOAD = 64 * 1024;
+const MAX_PAYLOAD = 80 * 1024; // cadru binar de relay (<= 64 KiB criptat) sau mesaj JSON de signaling
 const MAX_SIG_LEN = 48 * 1024;
 const JOIN_TIMEOUT_MS = 5_000;
 const SWEEP_MS = 15_000;
@@ -140,7 +140,13 @@ wss.on('connection', (ws, ip) => {
   ws.on('pong', () => (c.alive = true));
 
   ws.on('message', (raw, isBinary) => {
-    if (isBinary) return kick(c, 4003, 'bad-frame');
+    if (isBinary) {
+      // relay de rezerva (cand P2P e blocat): cadre deja criptate E2EE, trimise partenerului fara a fi citite sau stocate
+      if (!c.room) return kick(c, 4003, 'bad-frame');
+      const partner = c.room.peers[otherRole(c.role)];
+      if (partner && partner.ws.readyState === 1) partner.ws.send(raw, { binary: true });
+      return;
+    }
     if (!takeToken(c)) return kick(c, 4029, 'rate-limited');
     let msg;
     try {

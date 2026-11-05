@@ -48,6 +48,8 @@ const READ_BLOCK = 1024 * 1024;
 const BATCH_BYTES = 128 * 1024;
 const MAX_PENDING_OFFERS = 32;
 const MAX_ICE_RESTARTS = 3;
+const RELAY_AFTER_MS = 10_000; // daca P2P nu e stabilit in acest timp, hostul trece pe relay
+const RELAY_INBOX_MAX = 256; // cadre de relay primite inainte ca partea locala sa treaca pe relay
 
 const T_CTRL = 1;
 const T_DATA = 2;
@@ -262,6 +264,73 @@ const isTerminal = (s: TransferState) => s === 'done' || s === 'rejected' || s =
 /* SecureChannel                                                       */
 /* ------------------------------------------------------------------ */
 
+/** Ce are nevoie SecureChannel de la transport: RTCDataChannel sau relay prin WebSocket (RelayLink). */
+export interface DataLink {
+  binaryType: string;
+  bufferedAmountLowThreshold: number;
+  readonly bufferedAmount: number;
+  readonly readyState: string;
+  onopen: ((ev: any) => void) | null;
+  onclose: ((ev: any) => void) | null;
+  onerror: ((ev: any) => void) | null;
+  onmessage: ((ev: any) => void) | null;
+  onbufferedamountlow: ((ev: any) => void) | null;
+  send(data: Bytes): void;
+  close(): void;
+}
+
+/**
+ * Transport de rezerva: cadre binare deja criptate E2EE trimise prin WebSocket-ul de signaling,
+ * pe care serverul le da mai departe partenerului (fara sa le citeasca sau sa le stocheze).
+ * Merge si cand reteaua blocheaza WebRTC, pentru ca e HTTPS/WebSocket pe 443.
+ */
+export class RelayLink implements DataLink {
+  binaryType = 'arraybuffer';
+  bufferedAmountLowThreshold = 0;
+  readyState = 'open';
+  onopen: DataLink['onopen'] = null;
+  onclose: DataLink['onclose'] = null;
+  onerror: DataLink['onerror'] = null;
+  onmessage: DataLink['onmessage'] = null;
+  onbufferedamountlow: DataLink['onbufferedamountlow'] = null;
+  private poll: ReturnType<typeof setInterval> | null = null;
+
+  constructor(private readonly getWs: () => WebSocket | null) {}
+
+  get bufferedAmount(): number {
+    return this.getWs()?.bufferedAmount ?? 0;
+  }
+
+  send(data: Bytes): void {
+    const ws = this.getWs();
+    if (this.readyState !== 'open' || !ws || ws.readyState !== WebSocket.OPEN) throw new Error('relay indisponibil');
+    ws.send(data);
+    // WebSocket nu are `bufferedamountlow`: il simulam printr-un sondaj scurt doar cat timp exista date in coada
+    if (!this.poll) {
+      this.poll = setInterval(() => {
+        if (this.bufferedAmount > this.bufferedAmountLowThreshold) return;
+        this.stopPoll();
+        this.onbufferedamountlow?.(null);
+      }, 20);
+    }
+  }
+
+  deliver(data: ArrayBuffer): void {
+    this.onmessage?.({ data });
+  }
+
+  close(): void {
+    this.readyState = 'closed';
+    this.stopPoll();
+    this.onopen = this.onclose = this.onerror = this.onmessage = this.onbufferedamountlow = null;
+  }
+
+  private stopPoll(): void {
+    if (this.poll) clearInterval(this.poll);
+    this.poll = null;
+  }
+}
+
 export interface SecureChannelOptions {
   /** Evaluat lazy: pc.sctp apare abia dupa negociere. */
   maxMessageSize?: () => number | undefined;
@@ -284,7 +353,7 @@ export class SecureChannel extends Emitter<ChannelEvents> {
   private nextId = 1;
 
   constructor(
-    private readonly dc: RTCDataChannel,
+    private readonly dc: DataLink,
     keys: Pick<SessionKeys, 'send' | 'recv'>,
     private readonly opts: SecureChannelOptions = {},
   ) {
@@ -780,7 +849,8 @@ type SigMsg =
   | { k: 'offer'; sid: string; sdp: string; restart?: boolean }
   | { k: 'answer'; sid: string; sdp: string }
   | { k: 'ice'; sid: string; c: RTCIceCandidateInit }
-  | { k: 'restart' };
+  | { k: 'restart' }
+  | { k: 'relay' };
 
 const FATAL_SIGNALING: Record<string, string> = {
   'bad-auth': 'Cheia din link nu corespunde camerei.',
@@ -810,6 +880,11 @@ export class WebBeamPeer extends Emitter<PeerEvents> {
   private pendingIce: RTCIceCandidateInit[] = [];
   private restarts = 0;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private relayTimer: ReturnType<typeof setTimeout> | null = null;
+  private relayMode = false;
+  private relayLink: RelayLink | null = null;
+  private relayInbox: ArrayBuffer[] = [];
+  private everConnected = false;
 
   private _state: ConnectionState = 'idle';
   private _route: RouteKind = 'unknown';
@@ -848,6 +923,7 @@ export class WebBeamPeer extends Emitter<PeerEvents> {
     this.closedByUser = true;
     if (this.wsTimer) clearTimeout(this.wsTimer);
     if (this.restartTimer) clearTimeout(this.restartTimer);
+    if (this.relayTimer) clearTimeout(this.relayTimer);
     this.ws?.close(1000, 'bye');
     this.ws = null;
     this.teardownPeer();
@@ -873,15 +949,24 @@ export class WebBeamPeer extends Emitter<PeerEvents> {
     url.searchParams.set('room', this.opts.roomId);
     const ws = new WebSocket(url);
     this.ws = ws;
+    ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
       ws.send(JSON.stringify({ t: 'join', room: this.opts.roomId, auth: this.keys.roomAuth, role: this.opts.role }));
     };
-    ws.onmessage = (ev) => this.onSignalingMessage(ev.data);
+    ws.onmessage = (ev) => {
+      if (typeof ev.data !== 'string') return this.onRelayFrame(ev.data as ArrayBuffer);
+      this.onSignalingMessage(ev.data);
+    };
     ws.onerror = () => {};
     ws.onclose = (ev) => {
       if (this.ws !== ws) return;
       this.ws = null;
       this.joined = false;
+      if (this.relayMode) {
+        // relay-ul traieste in WebSocket: daca s-a inchis, canalul e pierdut si refacem totul de la capat
+        this.leaveRelay();
+        if (!this.closedByUser && !this.fatal) this.setState('reconnecting');
+      }
       if (this.closedByUser || this.fatal || this._state === 'connected') return; // P2P stabil: signaling se redeschide la nevoie
       if (this.wsAttempts >= 6) {
         this.setState('failed');
@@ -925,9 +1010,16 @@ export class WebBeamPeer extends Emitter<PeerEvents> {
         }
         break;
       case 'peer-joined':
+        this.leaveRelay(); // partenerul a revenit (reload): renegociem de la zero
         this.onPeerPresent();
         break;
       case 'peer-left':
+        if (this.relayMode) {
+          this.leaveRelay();
+          this.teardownPeer();
+          this.setState('waiting-for-peer');
+          break;
+        }
         if (this._state !== 'connected') {
           this.teardownPeer();
           this.setState('waiting-for-peer');
@@ -997,7 +1089,10 @@ export class WebBeamPeer extends Emitter<PeerEvents> {
         return;
       }
       case 'restart':
-        if (this.opts.role === 'host') await this.startNegotiation(true);
+        if (this.opts.role === 'host' && !this.relayMode) await this.startNegotiation(true);
+        return;
+      case 'relay':
+        if (this.opts.role === 'guest') this.enterRelay();
         return;
     }
   }
@@ -1006,12 +1101,15 @@ export class WebBeamPeer extends Emitter<PeerEvents> {
 
   private onPeerPresent(): void {
     this.setState('negotiating');
-    if (this.opts.role === 'host') void this.startNegotiation(false).catch((e) => this.emit('error', toError(e)));
+    if (this.opts.role === 'host') {
+      this.armRelayTimer();
+      void this.startNegotiation(false).catch((e) => this.emit('error', toError(e)));
+    }
     // guest: asteapta oferta; peer connection-ul se reface cand ajunge
   }
 
   private async startNegotiation(iceRestart: boolean): Promise<void> {
-    if (this.opts.role !== 'host') return;
+    if (this.opts.role !== 'host' || this.relayMode) return;
     if (!iceRestart || !this.pc) this.resetPeerConnection();
     const pc = this.pc!;
     this.sid = b64urlEncode(randomBytes(8));
@@ -1039,15 +1137,17 @@ export class WebBeamPeer extends Emitter<PeerEvents> {
     else pc.ondatachannel = (ev) => this.attachChannel(ev.channel);
   }
 
-  private attachChannel(dc: RTCDataChannel): void {
+  private attachChannel(dc: DataLink): void {
     const ch = new SecureChannel(dc, this.keys, {
-      maxMessageSize: () => this.pc?.sctp?.maxMessageSize,
+      maxMessageSize: () => (this.relayMode ? MAX_FRAME : this.pc?.sctp?.maxMessageSize),
       name: this.opts.deviceName,
       createSink: this.opts.createSink,
     });
     this.channel = ch;
     ch.on('ready', (info) => {
       this.restarts = 0;
+      this.everConnected = true;
+      if (this.relayTimer) clearTimeout(this.relayTimer);
       this.setState('connected');
       void this.detectRoute();
       this.emit('ready', info);
@@ -1086,12 +1186,14 @@ export class WebBeamPeer extends Emitter<PeerEvents> {
   }
 
   private async requestIceRestart(): Promise<void> {
-    if (this.closedByUser || !this.pc) return;
-    if (++this.restarts > MAX_ICE_RESTARTS) {
-      this.setState('failed');
-      this.emit('error', new Error('Conexiunea P2P a esuat (retea/NAT). Un server TURN ar putea ajuta.'));
+    if (this.closedByUser || !this.pc || this.relayMode) return;
+    const host = this.opts.role === 'host';
+    // hostul decide: daca P2P nu s-a stabilit niciodata sau a picat de prea multe ori, trecem pe relay
+    if (host && (!this.everConnected || this.restarts + 1 > MAX_ICE_RESTARTS)) {
+      void this.switchToRelay().catch((e) => this.emit('error', toError(e)));
       return;
     }
+    if (++this.restarts > MAX_ICE_RESTARTS) return; // oaspetele asteapta decizia hostului
     this.setState('reconnecting');
     try {
       await this.ensureSignaling();
@@ -1120,6 +1222,58 @@ export class WebBeamPeer extends Emitter<PeerEvents> {
       pc.ondatachannel = null;
       pc.close();
     }
+  }
+
+  /* ------------------------ relay de rezerva ------------------------ */
+
+  private armRelayTimer(): void {
+    if (this.relayTimer) clearTimeout(this.relayTimer);
+    this.relayTimer = setTimeout(() => {
+      if (this._state !== 'connected') void this.switchToRelay().catch((e) => this.emit('error', toError(e)));
+    }, RELAY_AFTER_MS);
+  }
+
+  /** Doar hostul decide: anunta oaspetele (mesaj criptat) si apoi trece si el pe relay. */
+  private async switchToRelay(): Promise<void> {
+    if (this.opts.role !== 'host' || this.relayMode || this.closedByUser) return;
+    await this.ensureSignaling();
+    await this.signal({ k: 'relay' });
+    this.enterRelay();
+  }
+
+  private enterRelay(): void {
+    if (this.relayMode || this.closedByUser || !this.ws) return;
+    this.relayMode = true;
+    if (this.relayTimer) clearTimeout(this.relayTimer);
+    if (this.restartTimer) clearTimeout(this.restartTimer);
+    this.teardownPeer();
+    const link = new RelayLink(() => this.ws);
+    this.relayLink = link;
+    this.attachChannel(link);
+    for (const frame of this.relayInbox.splice(0)) link.deliver(frame); // cadre sosite inainte sa trecem pe relay
+    if (this._route !== 'relay') {
+      this._route = 'relay';
+      this.emit('route', 'relay');
+    }
+  }
+
+  private leaveRelay(): void {
+    this.relayInbox = [];
+    if (!this.relayMode) return;
+    this.relayMode = false;
+    this.relayLink = null;
+    const ch = this.channel;
+    this.channel = null;
+    ch?.close();
+    if (this._route === 'relay') {
+      this._route = 'unknown';
+      this.emit('route', 'unknown');
+    }
+  }
+
+  private onRelayFrame(buf: ArrayBuffer): void {
+    if (this.relayLink) this.relayLink.deliver(buf);
+    else if (this.relayInbox.length < RELAY_INBOX_MAX) this.relayInbox.push(buf);
   }
 
   /** Citeste perechea de candidati aleasa: relay (TURN) sau direct. */
